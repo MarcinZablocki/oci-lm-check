@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from collections import namedtuple
+from email.policy import default
 import oci 
 import click
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress
 from prompt_toolkit import completion, PromptSession
+from prompt_toolkit.shortcuts import checkboxlist_dialog
 from typing import List
 
 console = Console()
@@ -19,6 +21,42 @@ class CompartmentsCompleter(completion.Completer):
     def get_completions(self, document, complete_event):
         for c in self.compartments:
             yield completion.Completion(c.id, 0, display=c.name)
+            
+def compartments_selector(compartments):
+  
+  all = oci.identity.models.Compartment(name="all", id="all")
+  
+  c_list = []+compartments
+  c_list.insert(0, all)
+  
+  results = checkboxlist_dialog(
+    title="Compartments",
+    text="Select compartments to read",
+    values=[(c, c.name) for c in c_list]
+).run()
+  
+  if any(x.name == "all" for x in results):
+    return compartments
+  else:   
+    return results
+
+def region_selector(regions):
+  
+  all = oci.identity.models.RegionSubscription(region_name="all")
+  
+  r_list = []+regions
+  r_list.insert(0, all)
+  
+  results = checkboxlist_dialog(
+    title="Regions",
+    text="Select regions to read",
+    values=[(c, c.region_name) for c in r_list]
+).run()
+  
+  if any(x.region_name == "all" for x in results):
+    return regions
+  else: 
+    return results
             
 class InstancesCompleter(completion.Completer):
     
@@ -47,27 +85,37 @@ def get_compartments(profile):
     return compartments
 
 @click.command()
-@click.option("--compartment_id", "-c", "compartment", help="Compartment ID")
-@click.option("--region", "-r", "region", help="Region")
+@click.option("--compartment_id", "-c", "compartment", help="Comma separated compartment IDs.")
+@click.option("--regions", "-r", "region", help="Comma separated regions to query. E.g: us-ashburn-1,us-phoenix-1")
 @click.option("--profile", "-p", help="config file profile", default='DEFAULT')
-@click.option("--interactive", "-i", help="interactive mode", is_flag=True)
-def main(compartment, region, profile, interactive):
+@click.option("-b", help="batch mode", is_flag=True)
+def main(compartment, region, profile, b):
   
+    regions = []
     c_list = []  
     
-    if not compartment and interactive:
+    if not compartment and not b:
         compartments = get_compartments(profile)
-        session = PromptSession('Compartment ID: ', completer=CompartmentsCompleter(compartments))
-        c = session.prompt(pre_run=session.default_buffer.start_completion)
-        compartment = [compartment for compartment in compartments if c in compartment.id]
-        c_list = compartment
+        c_list = compartments_selector(compartments)
     elif compartment: 
-      c_list.append(compartment)
+      for c in compartment.split(","):
+        c_list.append(c)
     else: 
       compartments = get_compartments(profile)
       c_list = compartments
+      
+    if not region and not b: 
+      config = oci.config.from_file(profile_name=profile)
+      regions = get_regions(oci.identity.IdentityClient(config), config)
+      r_list = region_selector(regions)
+    
+    if region: 
+      # not full implementation of RegionSubscription but we're using only the region_name
+      for i in region.split(","): 
+        r = oci.identity.models.RegionSubscription(region_name=i) 
+        regions.append(r)
         
-    run(c_list, profile, region)
+    run(c_list, profile, regions)
     
 def check(instance: oci.core.models.Instance, compute_client: oci.core.ComputeClient):
     
@@ -144,7 +192,7 @@ def collect(compute_client, vcn_client, compartment, region, instance_table):
                      
         lm = check(i, compute_client)
         
-        instance_table.add_row(compartment.name, i.id, i.display_name, i.shape, vs[0].private_ip, vs[0].public_ip, i.lifecycle_state, i.launch_options.network_type, str(len(bva)),i.time_maintenance_reboot_due, str(lm))
+        instance_table.add_row(compartment.name, i.id, i.display_name, i.region, i.shape, vs[0].private_ip, vs[0].public_ip, i.lifecycle_state, i.launch_options.network_type, str(len(bva)),i.time_maintenance_reboot_due, str(lm))
         
     elif i.lifecycle_state == "STOPPED": 
         s = ":stop_sign:"
@@ -164,6 +212,7 @@ def run(compartments, profile, r):
     instance_table.add_column("COMPARTMENT")
     instance_table.add_column("ID")
     instance_table.add_column("NAME")
+    instance_table.add_column("REGION")
     instance_table.add_column("SHAPE")
     instance_table.add_column("PRIVATE IP")
     instance_table.add_column("PUBLIC IP")
@@ -173,17 +222,19 @@ def run(compartments, profile, r):
     instance_table.add_column("MAINTENANCE")  
     instance_table.add_column("LIVE MIGRATION")  
     
+    if len(r) == 0: 
+      regions = get_regions(identity, config)
+    else:
+      regions = r
+    
     with Progress() as progress:
       task = progress.add_task(f"[bold green]Collecting data")
     
-    
-      if not r: 
-        regions = get_regions(identity, config)
-        total = len(regions) * len(compartments)
-        progress.update(task, total=total)
+      total = len(regions) * len(compartments)
+      progress.update(task, total=total)
         
         
-        for region in regions: 
+      for region in regions: 
           config['region'] = region.region_name
           compute_client = oci.core.ComputeClient(config)
           vcn_client = oci.core.VirtualNetworkClient(config)
@@ -192,21 +243,7 @@ def run(compartments, profile, r):
             progress.update(task, description=f"[bold green]Collecting data | {compartment.name}  | {region.region_name} ")
             instance_table = collect(compute_client, vcn_client, compartment, region, instance_table)
             progress.update(task, advance=1)
-            
-      else: 
-        region = namedtuple("Region", "region_name")
-        region.region_name = r
-        compute_client = oci.core.ComputeClient(config)
-        vcn_client = oci.core.VirtualNetworkClient(config)
-    
-        total = len(compartments)
-        progress.update(task, total=total)
-        for compartment in compartments: 
-
-            progress.update(task, description=f"[bold green]Collecting data | {compartment.name}  | {region.region_name} ")
-            instance_table = collect(compute_client, vcn_client, compartment, region, instance_table)
-            progress.update(task, advance=1)
-            
+                      
     console.print(instance_table)
 
 if __name__ == "__main__": 
