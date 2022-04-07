@@ -24,7 +24,7 @@ class CompartmentsCompleter(completion.Completer):
             
 def compartments_selector(compartments):
   
-  all = oci.identity.models.Compartment(name="all", id="all")
+  all = oci.identity.models.Compartment(name="ALL", id="ALL")
   
   c_list = []+compartments
   c_list.insert(0, all)
@@ -35,16 +35,17 @@ def compartments_selector(compartments):
     values=[(c, c.name) for c in c_list]
 ).run()
   
-  if any(x.name == "all" for x in results):
+  if any(x.name == "ALL" for x in results):
     return compartments
   else:   
     return results
 
 def region_selector(regions):
   
-  all = oci.identity.models.RegionSubscription(region_name="all")
+  all = oci.identity.models.RegionSubscription(region_name="ALL")
   
   r_list = []+regions
+  r_list.sort(key=lambda x: x.region_name)
   r_list.insert(0, all)
   
   results = checkboxlist_dialog(
@@ -53,7 +54,7 @@ def region_selector(regions):
     values=[(c, c.region_name) for c in r_list]
 ).run()
   
-  if any(x.region_name == "all" for x in results):
+  if any(x.region_name == "ALL" for x in results):
     return regions
   else: 
     return results
@@ -91,8 +92,8 @@ def get_compartments(profile):
 @click.option("-b", help="batch mode", is_flag=True)
 def main(compartment, region, profile, b):
   
-    regions = []
     c_list = []  
+    r_list = []
     
     if not compartment and not b:
         compartments = get_compartments(profile)
@@ -103,7 +104,7 @@ def main(compartment, region, profile, b):
     else: 
       compartments = get_compartments(profile)
       c_list = compartments
-      
+    
     if not region and not b: 
       config = oci.config.from_file(profile_name=profile)
       regions = get_regions(oci.identity.IdentityClient(config), config)
@@ -113,9 +114,11 @@ def main(compartment, region, profile, b):
       # not full implementation of RegionSubscription but we're using only the region_name
       for i in region.split(","): 
         r = oci.identity.models.RegionSubscription(region_name=i) 
-        regions.append(r)
+        r_list.append(r)
         
-    run(c_list, profile, regions)
+    print(r_list)
+        
+    run(c_list, profile, r_list)
     
 def check(instance: oci.core.models.Instance, compute_client: oci.core.ComputeClient):
     
