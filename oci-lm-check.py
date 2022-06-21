@@ -85,6 +85,16 @@ def get_compartments(profile):
         
     return compartments
 
+def get_compartments(profile, compartment):
+    config = oci.config.from_file(profile_name=profile)
+    identity = oci.identity.IdentityClient(config, profile_name=profile)
+
+    c_list = []
+    for c in compartment.split(","):
+      c_list.append(identity.get_compartment(compartment_id=c).data)
+
+    return c_list
+
 @click.command()
 @click.option("--compartment_id", "-c", "compartment", help="Comma separated compartment IDs.")
 @click.option("--regions", "-r", "region", help="Comma separated regions to query. E.g: us-ashburn-1,us-phoenix-1")
@@ -99,8 +109,7 @@ def main(compartment, region, profile, b):
         compartments = get_compartments(profile)
         c_list = compartments_selector(compartments)
     elif compartment: 
-      for c in compartment.split(","):
-        c_list.append(c)
+      c_list = get_compartments(profile, compartment)
     else: 
       compartments = get_compartments(profile)
       c_list = compartments
